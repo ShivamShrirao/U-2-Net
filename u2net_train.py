@@ -10,6 +10,9 @@ from torch.cuda import amp
 from tqdm import tqdm
 import glob
 import os
+from PIL import Image
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 from data_loader import SalObjDataset
 
@@ -22,7 +25,6 @@ bce_loss = nn.BCEWithLogitsLoss(size_average=True)
 
 
 def muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v):
-
     loss0 = bce_loss(d0, labels_v)
     loss1 = bce_loss(d1, labels_v)
     loss2 = bce_loss(d2, labels_v)
@@ -37,32 +39,30 @@ def muti_bce_loss_fusion(d0, d1, d2, d3, d4, d5, d6, labels_v):
 
     return loss0, loss
 
-
 # ------- 2. set the directory of training dataset --------
 
 model_name = 'u2net'  # 'u2netp'
 
-data_dir = os.path.join("/home/ubuntu/transparent_shadow/data/")
-tra_image_dir = os.path.join("image/")
-tra_label_dir = os.path.join("label/")
+data_dir = "/home/ubuntu/transparent_shadow/data/"
+tra_image_dir = os.path.join(data_dir, "image/")
+tra_label_dir = os.path.join(data_dir, "label/")
 
 image_ext = '.png'
 label_ext = '.png'
 
 model_dir = os.path.join(os.getcwd(), 'saved_models', model_name + os.sep)
 
-epoch_num = 100
+epoch_num = 150
 batch_size_train = 32
 batch_size_val = 1
 train_num = 0
 val_num = 0
 
-tra_img_name_list = glob.glob(data_dir + tra_image_dir + '*' + image_ext)
+tra_img_name_list = glob.glob(tra_image_dir + '*' + image_ext)
 
 tra_lbl_name_list = []
 for img_path in tra_img_name_list:
     img_name = img_path.split(os.sep)[-1]
-
     aaa = img_name.split(".")
     bbb = aaa[0:-1]
     imidx = bbb[0]
@@ -78,9 +78,19 @@ print("---")
 
 train_num = len(tra_img_name_list)
 
+transform = A.Compose([
+            A.Resize(360, 360),
+            A.RandomCrop(width=320, height=320),
+            A.HorizontalFlip(p=0.5),
+            A.RandomBrightnessContrast(p=0.2),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2()
+        ])
+
 salobj_dataset = SalObjDataset(
     img_name_list=tra_img_name_list,
     lbl_name_list=tra_lbl_name_list,
+    transform=transform
 )
 salobj_dataloader = DataLoader(salobj_dataset, batch_size=batch_size_train,
                                shuffle=True, num_workers=4, pin_memory=True)
@@ -92,13 +102,13 @@ if(model_name == 'u2net'):
 elif(model_name == 'u2netp'):
     net = U2NETP(3, 1)
 
-# net.load_state_dict(torch.load(model_dir+model_name+'.pth'))
+net.load_state_dict(torch.load(model_dir+"u2net_bce_itr_88000_train_0.59157470703125_tar_0.08326338195800781.pth"))
 
 net.cuda()
 
 # ------- 4. define optimizer --------
 print("---define optimizer...")
-optimizer = optim.Adam(net.parameters(), lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
+optimizer = optim.Adam(net.parameters(), lr=3e-4, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
 scaler = amp.GradScaler()
 
 # ------- 5. training process --------
@@ -107,7 +117,7 @@ ite_num = 0
 running_loss = 0.0
 running_tar_loss = 0.0
 ite_num4val = 0
-save_frq = 200  # save the model every 2000 iterations
+save_frq = 2000  # save the model every iterations
 print_frq = 10
 
 for epoch in range(0, epoch_num):
@@ -135,11 +145,15 @@ for epoch in range(0, epoch_num):
         running_loss += loss.data.detach_()
         running_tar_loss += loss2.data.detach_()
 
-        # del temporary outputs and loss
-        del d0, d1, d2, d3, d4, d5, d6, loss2, loss
-
         if ite_num % print_frq == 0:
             print(f"[epoch: {epoch + 1}/{epoch_num}, batch: {(i + 1) * batch_size_train}/{train_num}, ite: {ite_num}] train loss: {running_loss.item() / ite_num4val}, tar: {running_tar_loss.item() / ite_num4val}")
+
+            # pred = torch.sigmoid_(d0.detach_()[:,0]) * 255
+            # pred = pred.type(torch.uint8).cpu().numpy()
+            # for i,p in enumerate(pred):
+            #     Image.fromarray(p).save(f"saved_models/output/{i}.png")
+
+        del d0, d1, d2, d3, d4, d5, d6, loss2, loss
 
         if ite_num % save_frq == 0:
             save_file = model_name + f"_bce_itr_{ite_num}_train_{running_loss.item() / ite_num4val}_tar_{running_tar_loss.item() / ite_num4val}.pth"
